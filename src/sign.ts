@@ -243,7 +243,7 @@ async function signApplication(opts: ValidatedSignOptions, identity: Identity) {
         }
       }
 
-      debugLog('Signing... ' + filePath);
+      debugLog('Signing in parallel... ' + filePath);
 
       const perFileArgs = [...args];
 

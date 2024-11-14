@@ -322,7 +322,7 @@ async function signApplication(opts: ValidatedSignOptions, identity: Identity) {
   });
 
   for (const idx in signingPromises) {
-    let { files, run } = signingPromises[idx];
+    let { run } = signingPromises[idx];
     await run();
   }
 

@@ -5,7 +5,7 @@ import * as plist from 'plist';
 import compareVersion from 'compare-version';
 import pLimit from 'p-limit';
 
-const limit = pLimit(50);
+const limit = pLimit(20);
 
 import {
   debugLog,

@@ -203,7 +203,8 @@ async function signApplication(opts: ValidatedSignOptions, identity: Identity) {
   });
 
   const signingPromises = [...children, opts.app].map((filePath) => {
-    return limit(() => async function () {
+    return limit(async () => {
+      console.log("Doing", filePath);
       if (shouldIgnoreFilePath(filePath)) {
         debugLog('Skipped... ' + filePath);
         return;
@@ -303,7 +304,9 @@ async function signApplication(opts: ValidatedSignOptions, identity: Identity) {
     });
   });
 
+  console.log("About to sign everything...", signingPromises);
   await Promise.all(signingPromises);
+  console.log("Done!");
 
   // Verify code sign
   debugLog('Verifying...');

@@ -202,111 +202,129 @@ async function signApplication(opts: ValidatedSignOptions, identity: Identity) {
     return bDepth - aDepth;
   });
 
-  const signingPromises = [...children, opts.app].map((filePath) => {
-    return limit(async () => {
-      console.log("Doing", filePath);
-      if (shouldIgnoreFilePath(filePath)) {
-        debugLog('Skipped... ' + filePath);
-        return;
-      }
+  let filesByLength: any[] = [];
+  for (let s of [...children, opts.app]) {
+    let len = s.split(path.sep).length;
 
-      const perFileOptions = await mergeOptionsForFile(
-        opts.optionsForFile ? opts.optionsForFile(filePath) : null,
-        defaultOptionsForFile(filePath, opts.platform)
-      );
+    if (filesByLength[len] === undefined)
+      filesByLength[len] = [];
 
-      // preAutoEntitlements should only be applied to the top level app bundle.
-      // Applying it other files will cause the app to crash and be rejected by Apple.
-      if (!filePath.includes('.app/')) {
-        if (opts.preAutoEntitlements === false) {
-          debugWarn('Pre-sign operation disabled for entitlements automation.');
-        } else {
-          debugLog(
-            'Pre-sign operation enabled for entitlements automation with versions >= `1.1.1`:',
-            '\n',
-            '* Disable by setting `pre-auto-entitlements` to `false`.'
-          );
-          if (!opts.version || compareVersion(opts.version, '1.1.1') >= 0) {
-            // Enable Mac App Store sandboxing without using temporary-exception, introduced in Electron v1.1.1. Relates to electron#5601
-            const newEntitlements = await preAutoEntitlements(opts, perFileOptions, {
-              identity,
-              provisioningProfile: opts.provisioningProfile
-                ? await getProvisioningProfile(opts.provisioningProfile, opts.keychain)
-                : undefined
-            });
+    filesByLength[len].push(s);
+  }
+  filesByLength.reverse();
 
-            // preAutoEntitlements may provide us new entitlements, if so we update our options
-            // and ensure that entitlements-loginhelper has a correct default value
-            if (newEntitlements) {
-              perFileOptions.entitlements = newEntitlements;
+  const signingPromises = filesByLength.map((files) => {
+    return {
+      files: files,
+      run: async () => await Promise.all(
+        files.map((filePath: string) => {
+          return limit(async () => {
+            if (shouldIgnoreFilePath(filePath)) {
+              debugLog('Skipped... ' + filePath);
+              return;
             }
-          }
-        }
-      }
 
-      debugLog('Signing in parallel... ' + filePath);
+            const perFileOptions = await mergeOptionsForFile(
+              opts.optionsForFile ? opts.optionsForFile(filePath) : null,
+              defaultOptionsForFile(filePath, opts.platform)
+            );
 
-      const perFileArgs = [...args];
+            // preAutoEntitlements should only be applied to the top level app bundle.
+            // Applying it other files will cause the app to crash and be rejected by Apple.
+            if (!filePath.includes('.app/')) {
+              if (opts.preAutoEntitlements === false) {
+                debugWarn('Pre-sign operation disabled for entitlements automation.');
+              } else {
+                debugLog(
+                  'Pre-sign operation enabled for entitlements automation with versions >= `1.1.1`:',
+                  '\n',
+                  '* Disable by setting `pre-auto-entitlements` to `false`.'
+                );
+                if (!opts.version || compareVersion(opts.version, '1.1.1') >= 0) {
+                  // Enable Mac App Store sandboxing without using temporary-exception, introduced in Electron v1.1.1. Relates to electron#5601
+                  const newEntitlements = await preAutoEntitlements(opts, perFileOptions, {
+                    identity,
+                    provisioningProfile: opts.provisioningProfile
+                      ? await getProvisioningProfile(opts.provisioningProfile, opts.keychain)
+                      : undefined
+                  });
 
-      if (perFileOptions.requirements) {
-        if (perFileOptions.requirements.charAt(0) === '=') {
-          perFileArgs.push(`-r${perFileOptions.requirements}`);
-        } else {
-          perFileArgs.push('--requirements', perFileOptions.requirements);
-        }
-      }
-      if (perFileOptions.timestamp) {
-        perFileArgs.push('--timestamp=' + perFileOptions.timestamp);
-      } else {
-        perFileArgs.push('--timestamp');
-      }
+                  // preAutoEntitlements may provide us new entitlements, if so we update our options
+                  // and ensure that entitlements-loginhelper has a correct default value
+                  if (newEntitlements) {
+                    perFileOptions.entitlements = newEntitlements;
+                  }
+                }
+              }
+            }
 
-      let optionsArguments: string[] = [];
+            debugLog('Signing in parallel... ' + filePath);
 
-      if (perFileOptions.signatureFlags) {
-        if (Array.isArray(perFileOptions.signatureFlags)) {
-          optionsArguments.push(...perFileOptions.signatureFlags);
-        } else {
-          const flags = perFileOptions.signatureFlags.split(',').map(function (flag) {
-            return flag.trim();
+            const perFileArgs = [...args];
+
+            if (perFileOptions.requirements) {
+              if (perFileOptions.requirements.charAt(0) === '=') {
+                perFileArgs.push(`-r${perFileOptions.requirements}`);
+              } else {
+                perFileArgs.push('--requirements', perFileOptions.requirements);
+              }
+            }
+            if (perFileOptions.timestamp) {
+              perFileArgs.push('--timestamp=' + perFileOptions.timestamp);
+            } else {
+              perFileArgs.push('--timestamp');
+            }
+
+            let optionsArguments: string[] = [];
+
+            if (perFileOptions.signatureFlags) {
+              if (Array.isArray(perFileOptions.signatureFlags)) {
+                optionsArguments.push(...perFileOptions.signatureFlags);
+              } else {
+                const flags = perFileOptions.signatureFlags.split(',').map(function (flag) {
+                  return flag.trim();
+                });
+                optionsArguments.push(...flags);
+              }
+            }
+
+            if (perFileOptions.hardenedRuntime || optionsArguments.includes('runtime')) {
+              // Hardened runtime since darwin 17.7.0 --> macOS 10.13.6
+              if (compareVersion(osRelease, '17.7.0') >= 0) {
+                optionsArguments.push('runtime');
+              } else {
+                // Remove runtime if passed in with --signature-flags
+                debugLog(
+                  'Not enabling hardened runtime, current macOS version too low, requires 10.13.6 and higher'
+                );
+                optionsArguments = optionsArguments.filter((arg) => {
+                  return arg !== 'runtime';
+                });
+              }
+            }
+
+            if (optionsArguments.length) {
+              perFileArgs.push('--options', [...new Set(optionsArguments)].join(','));
+            }
+
+            if (perFileOptions.additionalArguments) {
+              perFileArgs.push(...perFileOptions.additionalArguments);
+            }
+
+            await execFileAsync(
+              'codesign',
+              perFileArgs.concat('--entitlements', perFileOptions.entitlements, filePath)
+            );
           });
-          optionsArguments.push(...flags);
-        }
-      }
-
-      if (perFileOptions.hardenedRuntime || optionsArguments.includes('runtime')) {
-        // Hardened runtime since darwin 17.7.0 --> macOS 10.13.6
-        if (compareVersion(osRelease, '17.7.0') >= 0) {
-          optionsArguments.push('runtime');
-        } else {
-          // Remove runtime if passed in with --signature-flags
-          debugLog(
-            'Not enabling hardened runtime, current macOS version too low, requires 10.13.6 and higher'
-          );
-          optionsArguments = optionsArguments.filter((arg) => {
-            return arg !== 'runtime';
-          });
-        }
-      }
-
-      if (optionsArguments.length) {
-        perFileArgs.push('--options', [...new Set(optionsArguments)].join(','));
-      }
-
-      if (perFileOptions.additionalArguments) {
-        perFileArgs.push(...perFileOptions.additionalArguments);
-      }
-
-      await execFileAsync(
-        'codesign',
-        perFileArgs.concat('--entitlements', perFileOptions.entitlements, filePath)
-      );
-    });
+        })
+      )
+    }
   });
 
-  console.log("About to sign everything...", signingPromises);
-  await Promise.all(signingPromises);
-  console.log("Done!");
+  for (const idx in signingPromises) {
+    let { files, run } = signingPromises[idx];
+    await run();
+  }
 
   // Verify code sign
   debugLog('Verifying...');
